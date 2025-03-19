@@ -31,10 +31,14 @@
 #include <iostream>
 #include <iterator>
 #include <list>
+#include <queue>
 #include <sstream>
 #include <stack>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
+
 #endif
 // #include<bits/extc++.h>
 using namespace std;
@@ -76,11 +80,13 @@ class Atom {
    public:
     int type;
     string symbol;
+    bool isFunction;
     int line;
     int column;
     Atom() {
         type = AtomType::UNKNOWN;
         symbol = "";
+        isFunction = false;
     }
 
     Atom(int type, string symbol, int line, int column) {
@@ -88,10 +94,45 @@ class Atom {
         this->symbol = symbol;
         this->line = line;
         this->column = column;
+        isFunction = false;
     }
 };
 
-enum ErrorType { UNKNOWN_ERROR = 0, EOF_ERROR, UNEXPECTED_TOKEN_ERROR, NO_CLOSING_QUOTE_ERROR };
+enum ErrorType {
+    UNKNOWN_ERROR = 0,
+    EOF_ERROR,
+    UNEXPECTED_TOKEN_ERROR,
+    NO_CLOSING_QUOTE_ERROR,
+    UNBOUND_ERROR,
+    NON_LIST_ERROR,
+    NUMBER_OF_ARGUMENT_ERROR,
+    ARGUMENT_TYPE_ERROR,
+    APPLY_NON_FUNCTION_ERROR,
+    NO_RETURN_VALUE_ERROR,
+    UNBOUND_SYMBOL_ERROR,
+    DIVISION_BY_ZERO_ERROR,
+    DEFINE_FORMAT_ERROR,
+    COND_FORMAT_ERROR,
+    UNBOUND_PARAMETER_ERROR,
+    UNBOUND_TEST_CONDITION_ERROR,
+    UNBOUND_CONDITION_ERROR,
+    LEVEL_ERROR
+};
+struct AbstractSyntaxTreeNode {
+    Atom atom;
+    AbstractSyntaxTreeNode *left, *right;
+    bool isFunction;
+    AbstractSyntaxTreeNode() {
+        atom = Atom(AtomType::DOT, ".", -MOD, -MOD);
+        left = right = nullptr;
+        isFunction = false;
+    }
+    AbstractSyntaxTreeNode(Atom atom) {
+        this->atom = atom;
+        left = right = nullptr;
+        isFunction = false;
+    }
+};
 
 class Errors {
     // exception class
@@ -99,13 +140,20 @@ class Errors {
     ErrorType type;
     string message;
     string unexpectedToken;
-    Errors(ErrorType e, string message, string unexpectedToken = "") {
+    AbstractSyntaxTreeNode *node;
+    Errors(ErrorType e, string message, string unexpectedToken = "", AbstractSyntaxTreeNode *node = nullptr) {
         this->type = e;
         this->message = message;
         this->unexpectedToken = unexpectedToken;
+        this->node = node;
     }
     string what() { return message; }
 };
+
+bool isAtomButNotParen(Atom atom) {
+    return atom.type == AtomType::SYMBOL || atom.type == AtomType::INT || atom.type == AtomType::FLOAT ||
+           atom.type == AtomType::STRING || atom.type == AtomType::NIL || atom.type == AtomType::T;
+}
 
 class CompileErr0rDebugger { // This class only used to debug this program
    public:
@@ -205,7 +253,7 @@ class LexicalAnalyzer {
 
     void recordLocation(char c) {
         if (isReturn(c)) {
-            // cerr << "!";
+            debugger.printd(to_string(lineNumber));
             columnNumber = 0;
             lineNumber++;
             // cerr << "line: " << lineNumber << endl;
@@ -321,7 +369,7 @@ class LexicalAnalyzer {
         if (s == "()" || s == "#f" || s == "nil") return AtomType::NIL;
         if (s == ".") return AtomType::DOT;
         if (s == "#t" || s == "t") return AtomType::T;
-        if (s == "QUOTE" || s == "'") return AtomType::QUOTE;
+        if (s == "'") return AtomType::QUOTE; // Do we need to handle "quote" ?????
         if (s == "(") return AtomType::LEFT_PAREN;
         if (s == ")") return AtomType::RIGHT_PAREN;
         if (s[0] == '"') return AtomType::STRING;
@@ -431,6 +479,7 @@ class LexicalAnalyzer {
     }
 
     void skipToNextLine(char c = '\0') { // only called when error occurs
+        debugger.printd("skipToNextLine", c);
         c = cin.peek();
         if (c == EOF) throw Errors(ErrorType::EOF_ERROR, "ERROR (no more input) : END-OF-FILE encountered");
         while (!isReturn(c)) {
@@ -502,19 +551,8 @@ class SyntaxAnalyzer {
             {} : 0 or more
             [] : 0 or 1
     */
-
-    struct AbstractSyntaxTreeNode {
-        Atom atom;
-        AbstractSyntaxTreeNode *left, *right;
-        AbstractSyntaxTreeNode() {
-            atom = Atom(AtomType::UNKNOWN, "UNKNOWN", -MOD, -MOD);
-            left = right = nullptr;
-        }
-        AbstractSyntaxTreeNode(Atom atom) {
-            this->atom = atom;
-            left = right = nullptr;
-        }
-    } *root;
+   public:
+    AbstractSyntaxTreeNode *root;
 
     void buildAbstractSyntaxTree(AbstractSyntaxTreeNode *&current, vector<Atom> tokenList,
                                  int &tokenListindex) {
@@ -572,7 +610,6 @@ class SyntaxAnalyzer {
         }
     }
 
-   public:
     SyntaxAnalyzer() { root = nullptr; }
     ~SyntaxAnalyzer() { clearAbstractSyntaxTree(root); }
 
@@ -620,6 +657,8 @@ class SyntaxAnalyzer {
             cout << "#t";
         else if (atom.type == AtomType::QUOTE)
             cout << "quote";
+        else if (atom.isFunction)
+            cout << "#<procedure " << atom.symbol << ">";
         else
             cout << atom.symbol;
     }
@@ -686,51 +725,55 @@ class SyntaxAnalyzer {
             cout << "( ";
             AbstractSyntaxTreeNode **left = &current->left;
             AbstractSyntaxTreeNode **right = &current->right;
-            if ((*left)->atom.type == AtomType::QUOTE) { // left child is quote
-                printAtom((*left)->atom);                // quote
-                cendl;
-                // printSpaces(alignSpaces + 2);
-                /*if ((*right)->atom.type == AtomType::NIL) {
-                    printAtom((*right)->atom);
+            if ((*left) != nullptr) {
+                if ((*left)->atom.type == AtomType::QUOTE) { // left child is quote
+                    printAtom((*left)->atom);                // quote
                     cendl;
-                } else if ((*right)->atom.type == AtomType::UNKNOWN ||
-                           (*right)->atom.type == AtomType::DOT) { // '(1 2 3)
-                    printAbstractSyntaxTree((*right)->left, alignSpaces + 2);
-                    // cendl;
-                }*/
-            } else if ((*left)->atom.type == AtomType::UNKNOWN ||
-                       (*left)->atom.type == AtomType::DOT) { // left child is .
-                printAbstractSyntaxTree((*left), alignSpaces + 2);
-                // printRightLeftChildren(current, alignSpaces);
-            } else {
-                printAtom((*left)->atom);
-                cendl;
-                // cerr << "right: " << (*right)->atom.symbol << endl;
+                    // printSpaces(alignSpaces + 2);
+                    /*if ((*right)->atom.type == AtomType::NIL) {
+                        printAtom((*right)->atom);
+                        cendl;
+                    } else if ((*right)->atom.type == AtomType::UNKNOWN ||
+                               (*right)->atom.type == AtomType::DOT) { // '(1 2 3)
+                        printAbstractSyntaxTree((*right)->left, alignSpaces + 2);
+                        // cendl;
+                    }*/
+                } else if ((*left)->atom.type == AtomType::UNKNOWN ||
+                           (*left)->atom.type == AtomType::DOT) { // left child is .
+                    printAbstractSyntaxTree((*left), alignSpaces + 2);
+                    /////
+                    // printRightLeftChildren(current, alignSpaces);
+                    /////
+                } else {
+                    printAtom((*left)->atom);
+                    cendl;
+                    // cerr << "right: " << (*right)->atom.symbol << endl;
+                }
+                ////
                 if (current->atom.type == AtomType::DOT && (*right)->atom.type != AtomType::NIL &&
                     (*right)->atom.type != AtomType::DOT && (*right)->atom.type != AtomType::UNKNOWN) {
                     printSpaces(alignSpaces + 2);
                     cout << ".";
                     cendl;
                 }
+                ////
             }
             printRightLeftChildren(current, alignSpaces);
             printSpaces(alignSpaces);
             cout << ")";
         } else {
             if (current->atom.type != AtomType::NIL ||
-                (current->atom.type == AtomType::NIL && current == root)) {
+                (current->atom.type == AtomType::NIL && current == root) ||
+                (current->atom.type == NIL && current->left == nullptr && current->right == nullptr)) {
                 printSpaces(alignSpaces);
                 printAtom(current->atom);
             }
         }
         cendl;
     }
-    bool isAtomButNotLeftParen(Atom atom) {
-        return atom.type == AtomType::SYMBOL || atom.type == AtomType::INT || atom.type == AtomType::FLOAT ||
-               atom.type == AtomType::STRING || atom.type == AtomType::NIL || atom.type == AtomType::T;
-    }
+
     bool isSExpCorrect(Atom startAtom) {
-        if (isAtomButNotLeftParen(startAtom)) return true; // Note: () is a valid atom
+        if (isAtomButNotParen(startAtom)) return true; // Note: () is a valid atom
         if (startAtom.type == AtomType::LEFT_PAREN) {
             string nextToken = scanner.peekToken();
             int nextAtomType = scanner.StringToAtom(nextToken).type;
@@ -799,6 +842,1003 @@ class SyntaxAnalyzer {
 
 } parser;
 
+class Executor {
+   public:
+    unordered_map<string, AbstractSyntaxTreeNode *> globalSymbolTable;
+    bool verbose = true;
+    unordered_map<string, bool> reservedWords = {{"cons", true},
+                                                 {"car", true},
+                                                 {"cdr", true},
+                                                 {"exit", true},
+                                                 {"list", true},
+                                                 {"quote", true},
+                                                 {"'", true},
+                                                 {"define", true},
+                                                 {"atom?", true},
+                                                 {"pair?", true},
+                                                 {"list?", true},
+                                                 {"null?", true},
+                                                 {"integer?", true},
+                                                 {"real?", true},
+                                                 {"number?", true},
+                                                 {"string?", true},
+                                                 {"boolean?", true},
+                                                 {"symbol?", true},
+                                                 {"+", true},
+                                                 {"-", true},
+                                                 {"*", true},
+                                                 {"/", true},
+                                                 {"not", true},
+                                                 {"or", true},
+                                                 {"and", true},
+                                                 {">", true},
+                                                 {">=", true},
+                                                 {"<", true},
+                                                 {"<=", true},
+                                                 {"=", true},
+                                                 {"string-append", true},
+                                                 {"string>?", true},
+                                                 {"string<?", true},
+                                                 {"string=?", true},
+                                                 {"eqv?", true},
+                                                 {"equal?", true},
+                                                 {"begin", true},
+                                                 {"if", true},
+                                                 {"cond", true},
+                                                 {"clean-environment", true}
+
+    }; // user is not allowed to define these words
+    // bool: is it a function name?
+
+    void init() {
+        for (auto &it : reservedWords) {
+            if (globalSymbolTable.find(it.first) == globalSymbolTable.end())
+                globalSymbolTable[it.first] =
+                    new AbstractSyntaxTreeNode(Atom(AtomType::SYMBOL, it.first, -MOD, -MOD));
+            globalSymbolTable[it.first]->isFunction = it.second;
+            globalSymbolTable[it.first]->atom.isFunction = it.second;
+        }
+    }
+
+    Executor() { init(); }
+
+    bool isList(AbstractSyntaxTreeNode *current) {
+        AbstractSyntaxTreeNode **right = &current;
+        while ((*right) != nullptr && (*right)->atom.type != AtomType::NIL) right = &((*right)->right);
+        return (*right) != nullptr && (*right)->atom.type == AtomType::NIL;
+    }
+
+    void clear() {
+        // find unique nodes in symbol table
+        unordered_set<AbstractSyntaxTreeNode *> uniqueNodes;
+        for (auto &it : globalSymbolTable) {
+            uniqueNodes.insert(it.second);
+        }
+        for (auto &it : uniqueNodes) {
+            parser.clearAbstractSyntaxTree(it);
+        }
+
+        globalSymbolTable.clear();
+    }
+
+    /*
+        This function can use to check argument count
+        @param current: the head of the list
+        @return: the size of the list
+    */
+    int size(AbstractSyntaxTreeNode *current) {
+        int cnt = 0;
+        while (current != nullptr && current->atom.type != AtomType::NIL) {
+            cnt++;
+            current = current->right;
+        }
+        return cnt;
+    }
+
+    AbstractSyntaxTreeNode *evaluateSymbols(AbstractSyntaxTreeNode *current) {
+        if (current == nullptr) return nullptr;
+        if (current->atom.type != AtomType::SYMBOL) return current;
+        if (globalSymbolTable.find(current->atom.symbol) == globalSymbolTable.end()) {
+            throw Errors(ErrorType::UNBOUND_ERROR, "ERROR (unbound symbol) : " + current->atom.symbol);
+        }
+        return copyNode(globalSymbolTable[current->atom.symbol]);
+    }
+
+    AbstractSyntaxTreeNode *evaluateTree(AbstractSyntaxTreeNode *current) {
+        if (current == nullptr) return nullptr;
+        current->left = evaluateSymbols(current->left);
+        current->right = evaluateSymbols(current->right);
+        evaluateTree(current->left);
+        evaluateTree(current->right);
+        return current;
+    }
+
+    /*
+        Copy a tree
+        @param current: the root of the tree
+        @return: root of the new tree
+    */
+    AbstractSyntaxTreeNode *copyNode(AbstractSyntaxTreeNode *current) {
+        if (current == nullptr) return nullptr;
+        AbstractSyntaxTreeNode *newNode = new AbstractSyntaxTreeNode();
+        newNode->atom = current->atom;
+        newNode->left = copyNode(current->left);
+        newNode->right = copyNode(current->right);
+        return newNode;
+    }
+
+    /*
+        Note: the atom node is not seen as a function by default
+        @param symbol: the atom symbol
+        @return: a new atom node
+    */
+    AbstractSyntaxTreeNode *makeAtom(string symbol) {
+        Atom atom = scanner.StringToAtom(symbol);
+        atom.column = -MOD;
+        atom.line = -MOD;
+        return new AbstractSyntaxTreeNode(atom);
+    }
+
+    /*
+        Top level functions: exit, clean-environment, define
+        @param current: the root of the tree
+        @param level: the level of the tree
+    */
+    AbstractSyntaxTreeNode *execTopLevelFunctions(AbstractSyntaxTreeNode *current, int level) {
+        if (current == nullptr) return nullptr;
+        // firstArgument is the name of the function(define, exit, clean-environment, etc.)
+        AbstractSyntaxTreeNode *firstArgument = current->left;
+        if (level != 0 &&
+            (firstArgument->atom.symbol == "exit" || firstArgument->atom.symbol == "clean-environment" ||
+             firstArgument->atom.symbol == "define")) {
+            if (firstArgument->atom.symbol == "exit")
+                throw Errors(ErrorType::LEVEL_ERROR, "ERROR (level of EXIT)");
+            if (firstArgument->atom.symbol == "clean-environment")
+                throw Errors(ErrorType::LEVEL_ERROR, "ERROR (level of CLEAN-ENVIRONMENT)");
+            if (firstArgument->atom.symbol == "define")
+                throw Errors(ErrorType::LEVEL_ERROR, "ERROR (level of DEFINE)");
+        }
+        if (firstArgument->atom.symbol == "exit") {
+            if (size(current->right) != 0)
+                throw Errors(ErrorType::NUMBER_OF_ARGUMENT_ERROR,
+                             "ERROR (incorrect number of arguments) : exit");
+            exit(0); // TODO
+        } else if (firstArgument->atom.symbol == "clean-environment") {
+            if (size(current->right) != 0)
+                throw Errors(ErrorType::NUMBER_OF_ARGUMENT_ERROR,
+                             "ERROR (incorrect number of arguments) : clean-environment");
+            globalSymbolTable.clear();
+            return makeAtom("environment cleaned");
+        } else if (firstArgument->atom.symbol == "define") {
+            // TODO: check if defining a function
+
+            if (size(current->right) != 2) // after define, there should be 2 arguments
+                throw Errors(ErrorType::DEFINE_FORMAT_ERROR, "ERROR (DEFINE format) : ", "", current);
+
+            AbstractSyntaxTreeNode *secondArgument = current->right->left;
+            // define a reserved word is not allowed
+            if (reservedWords.find(secondArgument->atom.symbol) != reservedWords.end())
+                throw Errors(ErrorType::DEFINE_FORMAT_ERROR, "ERROR (DEFINE format) : ", "", current);
+            // defining a non-symbol is not allowed
+            if (secondArgument->atom.type != AtomType::SYMBOL)
+                throw Errors(ErrorType::DEFINE_FORMAT_ERROR, "ERROR (DEFINE format) : ", "", current);
+
+            AbstractSyntaxTreeNode *thirdArgument = current->right->right->left;
+            AbstractSyntaxTreeNode *result =
+                (isAtomButNotParen(thirdArgument->atom) && thirdArgument->atom.type != AtomType::SYMBOL)
+                    ? evaluateTree(copyNode(thirdArgument))
+                    : exec(thirdArgument, level + 1);
+            // debugger.printd("result: ", result->atom.isFunction);
+            // if (define a b) && b is a known symbol, then adr(a) = adr(b)
+            // else copy the tree
+            if (thirdArgument->atom.type == AtomType::SYMBOL) {
+                if (globalSymbolTable.find(thirdArgument->atom.symbol) != globalSymbolTable.end()) {
+                    result = globalSymbolTable[thirdArgument->atom.symbol];
+                    // debugger.printd("result: ", result->atom.isFunction);
+                }
+            } else if (globalSymbolTable.find(result->atom.symbol) != globalSymbolTable.end()) {
+                result = globalSymbolTable[result->atom.symbol];
+                // debugger.printd("result: ", result->atom.isFunction);
+            } else
+                result = copyNode(result);
+            globalSymbolTable[secondArgument->atom.symbol] = result;
+            return makeAtom(secondArgument->atom.symbol + " defined");
+        }
+        return nullptr;
+    }
+
+    /*
+        Constructors: cons, list
+        @param current: the root of the tree
+        @param level: the level of the tree
+    */
+    AbstractSyntaxTreeNode *execConstructors(AbstractSyntaxTreeNode *current, int level) {
+        if (current == nullptr) return nullptr;
+        AbstractSyntaxTreeNode *firstArgument = current->left;
+
+        if (firstArgument->atom.symbol == "cons") {
+            if (size(current->right) != 2)
+                throw Errors(ErrorType::NUMBER_OF_ARGUMENT_ERROR,
+                             "ERROR (incorrect number of arguments) : cons");
+            AbstractSyntaxTreeNode *secondArgument = current->right->left;
+            // cerr << "2: " << secondArgument->atom.symbol << endl;
+            AbstractSyntaxTreeNode *thirdArgument = current->right->right->left;
+            Atom atom = Atom(AtomType::DOT, ".", -MOD, -MOD);
+            AbstractSyntaxTreeNode *result = new AbstractSyntaxTreeNode(atom);
+            result->left = exec(secondArgument, level + 1);
+            result->right = exec(thirdArgument, level + 1);
+            return result;
+        } else if (firstArgument->atom.symbol == "list") {
+            if (size(current->right) == 0) return makeAtom("nil");
+            Atom atom = Atom(AtomType::DOT, ".", -MOD, -MOD);
+            AbstractSyntaxTreeNode *result = new AbstractSyntaxTreeNode(atom);
+            AbstractSyntaxTreeNode **right = &result;
+            AbstractSyntaxTreeNode *temp = current->right;
+            while (temp != nullptr && temp->atom.type != AtomType::NIL) {
+                (*right)->left = exec(temp->left, level + 1);
+                (*right)->right = new AbstractSyntaxTreeNode(Atom(AtomType::DOT, ".", -MOD, -MOD));
+                right = &((*right)->right);
+                temp = temp->right;
+            }
+            (*right) = new AbstractSyntaxTreeNode(Atom(AtomType::NIL, "nil", -MOD, -MOD));
+            return result;
+        }
+        return nullptr;
+    }
+
+    AbstractSyntaxTreeNode *execPartAccessors(AbstractSyntaxTreeNode *current, int level = 0) {
+        if (current == nullptr) return nullptr;
+        AbstractSyntaxTreeNode *firstArgument = current->left;
+        if (firstArgument->atom.symbol == "car") {
+            if (size(current->right) != 1)
+                throw Errors(ErrorType::NUMBER_OF_ARGUMENT_ERROR,
+                             "ERROR (incorrect number of arguments) : car");
+            AbstractSyntaxTreeNode *secondArgument = current->right->left;
+            AbstractSyntaxTreeNode *result = exec(secondArgument, level + 1);
+            if (result->atom.type != AtomType::DOT && result->atom.type != AtomType::UNKNOWN)
+                throw Errors(ErrorType::ARGUMENT_TYPE_ERROR,
+                             "ERROR (car with incorrect argument type) : ", "", result);
+            return result->left;
+        } else if (firstArgument->atom.symbol == "cdr") {
+            if (size(current->right) != 1)
+                throw Errors(ErrorType::NUMBER_OF_ARGUMENT_ERROR,
+                             "ERROR (incorrect number of arguments) : cdr");
+            AbstractSyntaxTreeNode *secondArgument = current->right->left;
+            AbstractSyntaxTreeNode *result = exec(secondArgument, level + 1);
+            if (isAtomButNotParen(result->atom))
+                throw Errors(ErrorType::ARGUMENT_TYPE_ERROR,
+                             "ERROR (cdr with incorrect argument type) : ", "", result);
+            return result->right;
+        }
+        return nullptr;
+    }
+
+    /*
+        atom?
+        pair?
+        list?
+        null?
+        integer?
+        real?
+        number? // in OurSchem, real? = number?, but not in Scheme (there are complex-numbers)
+        string?
+        boolean?
+        symbol?
+    */
+
+    bool checkPrimitivePredicatesArgumentCount(AbstractSyntaxTreeNode *current) {
+        if (current == nullptr) return false;
+        if (current->left->atom.symbol != "atom?" && current->left->atom.symbol != "pair?" &&
+            current->left->atom.symbol != "list?" && current->left->atom.symbol != "null?" &&
+            current->left->atom.symbol != "integer?" && current->left->atom.symbol != "real?" &&
+            current->left->atom.symbol != "number?" && current->left->atom.symbol != "string?" &&
+            current->left->atom.symbol != "boolean?" && current->left->atom.symbol != "symbol?"
+
+        )
+            return false;
+        if (size(current->right) != 1)
+            throw Errors(ErrorType::NUMBER_OF_ARGUMENT_ERROR,
+                         "ERROR (incorrect number of arguments) : " + current->left->atom.symbol);
+        return true;
+    }
+    AbstractSyntaxTreeNode *execPrimitivePredicates(AbstractSyntaxTreeNode *current, int level = 0) {
+        if (current == nullptr) return nullptr;
+        if (!checkPrimitivePredicatesArgumentCount(current)) return nullptr;
+        AbstractSyntaxTreeNode *firstArgument = current->left;
+        AbstractSyntaxTreeNode *secondArgument = current->right->left;
+        AbstractSyntaxTreeNode *result = exec(secondArgument, level + 1);
+        if (firstArgument->atom.symbol == "atom?")
+            return makeAtom(isAtomButNotParen(result->atom) ? "#t" : "nil");
+        else if (firstArgument->atom.symbol == "pair?")
+            return makeAtom(result->atom.type == AtomType::DOT ? "#t" : "nil");
+        else if (firstArgument->atom.symbol == "list?")
+            return makeAtom(isList(result) ? "#t" : "nil");
+        else if (firstArgument->atom.symbol == "null?")
+            return makeAtom(result->atom.type == AtomType::NIL ? "#t" : "nil");
+        else if (firstArgument->atom.symbol == "integer?")
+            return makeAtom(result->atom.type == AtomType::INT ? "#t" : "nil");
+        else if (firstArgument->atom.symbol == "real?" || firstArgument->atom.symbol == "number?")
+            return makeAtom(
+                result->atom.type == AtomType::FLOAT || result->atom.type == AtomType::INT ? "#t" : "nil");
+        else if (firstArgument->atom.symbol == "string?")
+            return makeAtom(result->atom.type == AtomType::STRING ? "#t" : "nil");
+        else if (firstArgument->atom.symbol == "boolean?")
+            return makeAtom(result->atom.type == AtomType::T || result->atom.type == AtomType::NIL ? "#t"
+                                                                                                   : "nil");
+        else if (firstArgument->atom.symbol == "symbol?")
+            return makeAtom(result->atom.type == AtomType::SYMBOL ? "#t" : "nil");
+        return nullptr;
+    }
+
+    /*
+        +, -, *, /
+    */
+    AbstractSyntaxTreeNode *execBasicArithmetic(AbstractSyntaxTreeNode *current, int level = 0) {
+        if (current == nullptr) return nullptr;
+        AbstractSyntaxTreeNode *firstArgument = current->left;
+        if (firstArgument->atom.symbol != "+" && firstArgument->atom.symbol != "-" &&
+            firstArgument->atom.symbol != "*" && firstArgument->atom.symbol != "/")
+            return nullptr;
+        if (size(current->right) < 2)
+            throw Errors(ErrorType::NUMBER_OF_ARGUMENT_ERROR,
+                         "ERROR (incorrect number of arguments) : " + firstArgument->atom.symbol);
+
+        // may have 2 or more arguments
+        bool isFloat = false;
+        if (firstArgument->atom.symbol == "+") {
+            double doubleSum = 0;
+            int intSum = 0;
+            AbstractSyntaxTreeNode *temp = current->right;
+            while (temp != nullptr && temp->atom.type != AtomType::NIL) {
+                AbstractSyntaxTreeNode *result = exec(temp->left, level + 1);
+                if (result->atom.type == AtomType::FLOAT) {
+                    isFloat = true;
+                    doubleSum += stof(result->atom.symbol);
+                } else if (result->atom.type == AtomType::INT) {
+                    intSum += stoi(result->atom.symbol);
+                } else {
+                    throw Errors(ErrorType::ARGUMENT_TYPE_ERROR,
+                                 "ERROR (+ with incorrect argument type) : ", "", result);
+                }
+                temp = temp->right;
+            }
+
+            if (isFloat) {
+                // char buffer[100];
+                // sprintf(buffer, "%.3f", doubleSum + intSum);
+                return new AbstractSyntaxTreeNode(
+                    Atom(AtomType::FLOAT, to_string(doubleSum + intSum), -MOD, -MOD));
+            } else {
+                return new AbstractSyntaxTreeNode(Atom(AtomType::INT, to_string(intSum), -MOD, -MOD));
+            }
+        } else if (firstArgument->atom.symbol == "-") {
+            AbstractSyntaxTreeNode *temp = current->right;
+            if (temp == nullptr || temp->atom.type == AtomType::NIL) {
+                throw Errors(ErrorType::NUMBER_OF_ARGUMENT_ERROR,
+                             "ERROR (incorrect number of arguments) : " + firstArgument->atom.symbol);
+            }
+            AbstractSyntaxTreeNode *result = exec(temp->left, level + 1);
+            if (result->atom.type == AtomType::FLOAT) {
+                isFloat = true;
+            } else if (result->atom.type != AtomType::INT) {
+                throw Errors(ErrorType::ARGUMENT_TYPE_ERROR, "ERROR (- with incorrect argument type) : ", "",
+                             result);
+            }
+            double doubleSum = stof(result->atom.symbol);
+            temp = temp->right;
+            while (temp != nullptr && temp->atom.type != AtomType::NIL) {
+                AbstractSyntaxTreeNode *result = exec(temp->left, level + 1);
+                if (result->atom.type == AtomType::FLOAT) {
+                    isFloat = true;
+                    doubleSum -= stof(result->atom.symbol);
+                } else if (result->atom.type == AtomType::INT) {
+                    doubleSum -= stoi(result->atom.symbol);
+                } else {
+                    throw Errors(ErrorType::ARGUMENT_TYPE_ERROR,
+                                 "ERROR (- with incorrect argument type) : ", "", result);
+                }
+                temp = temp->right;
+            }
+
+            if (isFloat) {
+                // char buffer[100];
+                // sprintf(buffer, "%.3f", doubleSum);
+                return new AbstractSyntaxTreeNode(Atom(AtomType::FLOAT, to_string(doubleSum), -MOD, -MOD));
+            } else {
+                return new AbstractSyntaxTreeNode(Atom(AtomType::INT, to_string((int)doubleSum), -MOD, -MOD));
+            }
+        } else if (firstArgument->atom.symbol == "*") {
+            double doubleProduct = 1;
+            AbstractSyntaxTreeNode *temp = current->right;
+            while (temp != nullptr && temp->atom.type != AtomType::NIL) {
+                AbstractSyntaxTreeNode *result = exec(temp->left, level + 1);
+                if (result->atom.type == AtomType::FLOAT) {
+                    isFloat = true;
+                    doubleProduct *= stof(result->atom.symbol);
+                } else if (result->atom.type == AtomType::INT) {
+                    doubleProduct *= stoi(result->atom.symbol);
+                } else {
+                    throw Errors(ErrorType::ARGUMENT_TYPE_ERROR,
+                                 "ERROR (* with incorrect argument type) : ", "", result);
+                }
+                temp = temp->right;
+            }
+
+            if (isFloat) {
+                // char buffer[100];
+                // sprintf(buffer, "%.3f", doubleProduct);
+                return new AbstractSyntaxTreeNode(
+                    Atom(AtomType::FLOAT, to_string(doubleProduct), -MOD, -MOD));
+            } else {
+                return new AbstractSyntaxTreeNode(
+                    Atom(AtomType::INT, to_string((int)doubleProduct), -MOD, -MOD));
+            }
+        } else if (firstArgument->atom.symbol == "/") {
+            AbstractSyntaxTreeNode *temp = current->right;
+            if (temp == nullptr || temp->atom.type == AtomType::NIL) {
+                throw Errors(ErrorType::NUMBER_OF_ARGUMENT_ERROR,
+                             "ERROR (incorrect number of arguments) : " + firstArgument->atom.symbol);
+            }
+            AbstractSyntaxTreeNode *result = exec(temp->left, level + 1);
+            if (result->atom.type == AtomType::FLOAT) {
+                isFloat = true;
+            } else if (result->atom.type != AtomType::INT) {
+                throw Errors(ErrorType::ARGUMENT_TYPE_ERROR, "ERROR (/ with incorrect argument type) : ", "",
+                             result);
+            }
+            double doubleQuotient = stof(result->atom.symbol);
+            temp = temp->right;
+            while (temp != nullptr && temp->atom.type != AtomType::NIL) {
+                AbstractSyntaxTreeNode *result = exec(temp->left, level + 1);
+                if (result->atom.type == AtomType::FLOAT) {
+                    isFloat = true;
+                    if (fabs(stof(result->atom.symbol)) < 1e-20)
+                        throw Errors(ErrorType::DIVISION_BY_ZERO_ERROR, "ERROR (division by zero) : /");
+                    doubleQuotient /= stof(result->atom.symbol);
+                } else if (result->atom.type == AtomType::INT) {
+                    if (stoi(result->atom.symbol) == 0)
+                        throw Errors(ErrorType::DIVISION_BY_ZERO_ERROR, "ERROR (division by zero) : /");
+                    doubleQuotient /= stoi(result->atom.symbol);
+                } else {
+                    throw Errors(ErrorType::ARGUMENT_TYPE_ERROR,
+                                 "ERROR (/ with incorrect argument type) : ", "", result);
+                }
+                temp = temp->right;
+            }
+
+            if (isFloat) {
+                // char buffer[100];
+                // sprintf(buffer, "%.3f", doubleQuotient);
+                return new AbstractSyntaxTreeNode(
+                    Atom(AtomType::FLOAT, to_string(doubleQuotient), -MOD, -MOD));
+            } else {
+                return new AbstractSyntaxTreeNode(
+                    Atom(AtomType::INT, to_string((int)doubleQuotient), -MOD, -MOD));
+            }
+        }
+        return nullptr;
+    }
+
+    /*
+        not, or, and
+    */
+    AbstractSyntaxTreeNode *execLogical(AbstractSyntaxTreeNode *current, int level = 0) {
+        if (current == nullptr) return nullptr;
+        AbstractSyntaxTreeNode *firstArgument = current->left;
+        if (firstArgument->atom.symbol == "not") {
+            if (size(current->right) != 1)
+                throw Errors(ErrorType::NUMBER_OF_ARGUMENT_ERROR,
+                             "ERROR (incorrect number of arguments) : not");
+            AbstractSyntaxTreeNode *secondArgument = current->right->left;
+            AbstractSyntaxTreeNode *result = exec(secondArgument, level + 1);
+
+            return makeAtom(result->atom.type == AtomType::NIL ? "#t" : "nil");
+        } else if (firstArgument->atom.symbol == "or") {
+            AbstractSyntaxTreeNode *temp = current->right;
+            AbstractSyntaxTreeNode *result;
+            while (temp != nullptr && temp->atom.type != AtomType::NIL) {
+                result = exec(temp->left, level + 1);
+
+                if (result->atom.type != AtomType::NIL) return result;
+                temp = temp->right;
+            }
+            return result;
+        } else if (firstArgument->atom.symbol == "and") {
+            AbstractSyntaxTreeNode *temp = current->right;
+            AbstractSyntaxTreeNode *result;
+            while (temp != nullptr && temp->atom.type != AtomType::NIL) {
+                result = exec(temp->left, level + 1);
+
+                if (result->atom.type == AtomType::NIL) return makeAtom("nil");
+                temp = temp->right;
+            }
+            return result;
+        }
+        return nullptr;
+    }
+
+    /*
+        >, >=, <, <=, =
+    */
+    AbstractSyntaxTreeNode *execComparator(AbstractSyntaxTreeNode *current, int level = 0) {
+        if (current == nullptr) return nullptr;
+        AbstractSyntaxTreeNode *firstArgument = current->left;
+        if (firstArgument->atom.symbol != ">" && firstArgument->atom.symbol != ">=" &&
+            firstArgument->atom.symbol != "<" && firstArgument->atom.symbol != "<=" &&
+            firstArgument->atom.symbol != "=")
+            return nullptr;
+        if (size(current->right) < 2)
+            throw Errors(ErrorType::NUMBER_OF_ARGUMENT_ERROR,
+                         "ERROR (incorrect number of arguments) : " + firstArgument->atom.symbol);
+
+        AbstractSyntaxTreeNode *t = current->right;
+        while (t != nullptr && t->atom.type != AtomType::NIL) {
+            AbstractSyntaxTreeNode *result = exec(t->left, level + 1);
+            if (result->atom.type != AtomType::INT && result->atom.type != AtomType::FLOAT)
+                throw Errors(ErrorType::ARGUMENT_TYPE_ERROR,
+                             "ERROR (" + firstArgument->atom.symbol + " with incorrect argument type) : ", "",
+                             result);
+            t = t->right;
+        }
+        if (firstArgument->atom.symbol == "<") {
+            AbstractSyntaxTreeNode *temp = current->right;
+            AbstractSyntaxTreeNode *result = exec(temp->left, level + 1);
+            if (result->atom.type != AtomType::INT && result->atom.type != AtomType::FLOAT)
+                throw Errors(ErrorType::ARGUMENT_TYPE_ERROR, "ERROR (< with incorrect argument type) : ", "",
+                             result);
+            temp = temp->right;
+            while (temp != nullptr && temp->atom.type != AtomType::NIL) {
+                AbstractSyntaxTreeNode *nextResult = exec(temp->left, level + 1);
+                if (nextResult->atom.type != AtomType::INT && nextResult->atom.type != AtomType::FLOAT)
+                    throw Errors(ErrorType::ARGUMENT_TYPE_ERROR,
+                                 "ERROR (< with incorrect argument type) : ", "", nextResult);
+                if (stof(result->atom.symbol) >= stof(nextResult->atom.symbol)) return makeAtom("nil");
+                result = nextResult;
+                temp = temp->right;
+            }
+            return makeAtom("#t");
+        } else if (firstArgument->atom.symbol == ">") { // (> a b c), should compare a and b, then b and c
+            AbstractSyntaxTreeNode *temp = current->right;
+            AbstractSyntaxTreeNode *result = exec(temp->left, level + 1);
+            if (result->atom.type != AtomType::INT && result->atom.type != AtomType::FLOAT)
+                throw Errors(ErrorType::ARGUMENT_TYPE_ERROR, "ERROR (> with incorrect argument type) : ", "",
+                             result);
+            temp = temp->right;
+            while (temp != nullptr && temp->atom.type != AtomType::NIL) {
+                AbstractSyntaxTreeNode *nextResult = exec(temp->left, level + 1);
+                if (nextResult->atom.type != AtomType::INT && nextResult->atom.type != AtomType::FLOAT)
+                    throw Errors(ErrorType::ARGUMENT_TYPE_ERROR,
+                                 "ERROR (> with incorrect argument type) : ", "", nextResult);
+                if (stof(result->atom.symbol) <= stof(nextResult->atom.symbol)) return makeAtom("nil");
+                result = nextResult;
+                temp = temp->right;
+            }
+            return makeAtom("#t");
+        } else if (firstArgument->atom.symbol == ">=") {
+            AbstractSyntaxTreeNode *temp = current->right;
+            AbstractSyntaxTreeNode *result = exec(temp->left, level + 1);
+            if (result->atom.type != AtomType::INT && result->atom.type != AtomType::FLOAT)
+                throw Errors(ErrorType::ARGUMENT_TYPE_ERROR, "ERROR (>= with incorrect argument type) : ", "",
+                             result);
+            temp = temp->right;
+            while (temp != nullptr && temp->atom.type != AtomType::NIL) {
+                AbstractSyntaxTreeNode *nextResult = exec(temp->left, level + 1);
+                if (nextResult->atom.type != AtomType::INT && nextResult->atom.type != AtomType::FLOAT)
+                    throw Errors(ErrorType::ARGUMENT_TYPE_ERROR,
+                                 "ERROR (>= with incorrect argument type) : ", "", nextResult);
+                if (stof(result->atom.symbol) < stof(nextResult->atom.symbol)) return makeAtom("nil");
+                result = nextResult;
+                temp = temp->right;
+            }
+            return makeAtom("#t");
+        } else if (firstArgument->atom.symbol == "<=") {
+            AbstractSyntaxTreeNode *temp = current->right;
+            AbstractSyntaxTreeNode *result = exec(temp->left, level + 1);
+            if (result->atom.type != AtomType::INT && result->atom.type != AtomType::FLOAT)
+                throw Errors(ErrorType::ARGUMENT_TYPE_ERROR, "ERROR (<= with incorrect argument type) : ", "",
+                             result);
+            temp = temp->right;
+            while (temp != nullptr && temp->atom.type != AtomType::NIL) {
+                AbstractSyntaxTreeNode *nextResult = exec(temp->left, level + 1);
+                if (nextResult->atom.type != AtomType::INT && nextResult->atom.type != AtomType::FLOAT)
+                    throw Errors(ErrorType::ARGUMENT_TYPE_ERROR,
+                                 "ERROR (<= with incorrect argument type) : ", "", nextResult);
+                if (stof(result->atom.symbol) > stof(nextResult->atom.symbol)) return makeAtom("nil");
+                result = nextResult;
+                temp = temp->right;
+            }
+            return makeAtom("#t");
+        } else if (firstArgument->atom.symbol == "=") {
+            AbstractSyntaxTreeNode *temp = current->right;
+            AbstractSyntaxTreeNode *result = exec(temp->left, level + 1);
+            if (result->atom.type != AtomType::INT && result->atom.type != AtomType::FLOAT)
+                throw Errors(ErrorType::ARGUMENT_TYPE_ERROR, "ERROR (= with incorrect argument type) : ", "",
+                             result);
+            temp = temp->right;
+            while (temp != nullptr && temp->atom.type != AtomType::NIL) {
+                AbstractSyntaxTreeNode *nextResult = exec(temp->left, level + 1);
+                if (nextResult->atom.type != AtomType::INT && nextResult->atom.type != AtomType::FLOAT)
+                    throw Errors(ErrorType::ARGUMENT_TYPE_ERROR,
+                                 "ERROR (= with incorrect argument type) : ", "", nextResult);
+                if (stof(result->atom.symbol) != stof(nextResult->atom.symbol)) return makeAtom("nil");
+                result = nextResult;
+                temp = temp->right;
+            }
+            return makeAtom("#t");
+        }
+        return nullptr;
+    }
+
+    /*
+        string-append, string>?, string<?, string=?
+    */
+    AbstractSyntaxTreeNode *execStringOperation(AbstractSyntaxTreeNode *current, int level = 0) {
+        if (current == nullptr) return nullptr;
+        AbstractSyntaxTreeNode *firstArgument = current->left;
+        if (firstArgument->atom.symbol != "string-append" && firstArgument->atom.symbol != "string>?" &&
+            firstArgument->atom.symbol != "string<?" && firstArgument->atom.symbol != "string=?")
+            return nullptr;
+        if (size(current->right) < 2)
+            throw Errors(ErrorType::NUMBER_OF_ARGUMENT_ERROR,
+                         "ERROR (incorrect number of arguments) : " + firstArgument->atom.symbol);
+        AbstractSyntaxTreeNode *t = current->right;
+        while (t != nullptr && t->atom.type != AtomType::NIL) {
+            AbstractSyntaxTreeNode *result = exec(t->left, level + 1);
+            if (result->atom.type != AtomType::STRING)
+                throw Errors(ErrorType::ARGUMENT_TYPE_ERROR,
+                             "ERROR (" + firstArgument->atom.symbol + " with incorrect argument type) : ", "",
+                             result);
+            t = t->right;
+        }
+        if (firstArgument->atom.symbol == "string-append") {
+            string result = "\"";
+            AbstractSyntaxTreeNode *temp = current->right;
+            while (temp != nullptr && temp->atom.type != AtomType::NIL) {
+                AbstractSyntaxTreeNode *nextResult = exec(temp->left, level + 1);
+                if (nextResult->atom.type != AtomType::STRING)
+                    throw Errors(ErrorType::ARGUMENT_TYPE_ERROR,
+                                 "ERROR (string-append with incorrect argument type) : ", "", nextResult);
+
+                result += nextResult->atom.symbol.substr(1, nextResult->atom.symbol.size() - 2);
+                temp = temp->right;
+            }
+            result += "\"";
+            return new AbstractSyntaxTreeNode(Atom(AtomType::STRING, result, -MOD, -MOD));
+        } else if (firstArgument->atom.symbol == "string>?") {
+            AbstractSyntaxTreeNode *temp = current->right;
+            AbstractSyntaxTreeNode *result = exec(temp->left, level + 1);
+            if (result->atom.type != AtomType::STRING)
+                throw Errors(ErrorType::ARGUMENT_TYPE_ERROR,
+                             "ERROR (string>? with incorrect argument type) : ", "", result);
+            string firstString = result->atom.symbol;
+            temp = temp->right;
+            while (temp != nullptr && temp->atom.type != AtomType::NIL) {
+                AbstractSyntaxTreeNode *nextResult = exec(temp->left, level + 1);
+                if (nextResult->atom.type != AtomType::STRING)
+                    throw Errors(ErrorType::ARGUMENT_TYPE_ERROR,
+                                 "ERROR (string>? with incorrect argument type) : ", "", nextResult);
+                if (firstString <= nextResult->atom.symbol) return makeAtom("nil");
+                firstString = nextResult->atom.symbol;
+                temp = temp->right;
+            }
+            return makeAtom("#t");
+        } else if (firstArgument->atom.symbol == "string<?") {
+            AbstractSyntaxTreeNode *temp = current->right;
+            AbstractSyntaxTreeNode *result = exec(temp->left, level + 1);
+            if (result->atom.type != AtomType::STRING)
+                throw Errors(ErrorType::ARGUMENT_TYPE_ERROR,
+                             "ERROR (string<? with incorrect argument type) : ", "", result);
+            string firstString = result->atom.symbol;
+            temp = temp->right;
+            while (temp != nullptr && temp->atom.type != AtomType::NIL) {
+                AbstractSyntaxTreeNode *nextResult = exec(temp->left, level + 1);
+                if (nextResult->atom.type != AtomType::STRING)
+                    throw Errors(ErrorType::ARGUMENT_TYPE_ERROR,
+                                 "ERROR (string<? with incorrect argument type) : ", "", nextResult);
+                if (firstString >= nextResult->atom.symbol) return makeAtom("nil");
+                firstString = nextResult->atom.symbol;
+                temp = temp->right;
+            }
+            return makeAtom("#t");
+        } else if (firstArgument->atom.symbol == "string=?") {
+            AbstractSyntaxTreeNode *temp = current->right;
+            AbstractSyntaxTreeNode *result = exec(temp->left, level + 1);
+            if (result->atom.type != AtomType::STRING)
+                throw Errors(ErrorType::ARGUMENT_TYPE_ERROR,
+                             "ERROR (string=? with incorrect argument type) : ", "", result);
+            string firstString = result->atom.symbol;
+            temp = temp->right;
+            while (temp != nullptr && temp->atom.type != AtomType::NIL) {
+                AbstractSyntaxTreeNode *nextResult = exec(temp->left, level + 1);
+                if (nextResult->atom.type != AtomType::STRING)
+                    throw Errors(ErrorType::ARGUMENT_TYPE_ERROR,
+                                 "ERROR (string=? with incorrect argument type) : ", "", nextResult);
+                if (firstString != nextResult->atom.symbol) return makeAtom("nil");
+                firstString = nextResult->atom.symbol;
+                temp = temp->right;
+            }
+            return makeAtom("#t");
+        }
+        return nullptr;
+    }
+
+    /*
+        eqv?, equal?
+    */
+    bool isEqual(AbstractSyntaxTreeNode *result1, AbstractSyntaxTreeNode *result2) {
+        if (result1 == nullptr && result2 == nullptr) return true;
+        if (result1->atom.type != result2->atom.type) return false;
+        if (result1->atom.symbol != result2->atom.symbol) return false;
+        return isEqual(result1->left, result2->left) && isEqual(result1->right, result2->right);
+    }
+    AbstractSyntaxTreeNode *execEqivalenceTester(AbstractSyntaxTreeNode *current, int level = 0) {
+        if (current == nullptr) return nullptr;
+        AbstractSyntaxTreeNode *firstArgument = current->left;
+        if (firstArgument->atom.symbol != "eqv?" && firstArgument->atom.symbol != "equal?") return nullptr;
+        if (size(current->right) != 2)
+            throw Errors(ErrorType::NUMBER_OF_ARGUMENT_ERROR,
+                         "ERROR (incorrect number of arguments) : " + firstArgument->atom.symbol);
+        AbstractSyntaxTreeNode *secondArgument = current->right->left;
+        AbstractSyntaxTreeNode *thirdArgument = current->right->right->left;
+        AbstractSyntaxTreeNode *result1 = exec(secondArgument, level + 1);
+        AbstractSyntaxTreeNode *result2 = exec(thirdArgument, level + 1);
+        if (firstArgument->atom.symbol == "eqv?") {
+            if (result1->atom.type != result2->atom.type) return makeAtom("nil");
+            if (isAtomButNotParen(result1->atom) && isAtomButNotParen(result2->atom) &&
+                result1->atom.type != AtomType::STRING && result2->atom.type != AtomType::STRING) {
+                if (result1->atom.symbol != result2->atom.symbol)
+                    return makeAtom("nil");
+                else
+                    return makeAtom("#t");
+            } else if (result1 == result2)
+                return makeAtom("#t");
+            return makeAtom("nil");
+        } else if (firstArgument->atom.symbol == "equal?") {
+            if (result1->atom.type != result2->atom.type) return makeAtom("nil");
+            if (isEqual(result1, result2)) return makeAtom("#t");
+            return makeAtom("nil");
+        }
+        return nullptr;
+    }
+
+    /*
+        exec seq1 seq2 seq3 ...
+        and return the last result
+        Note: param current is NOT the root of AST Tree, current->left is seq1, current->right->left is seq2,
+       ...
+    */
+    AbstractSyntaxTreeNode *execSequence(AbstractSyntaxTreeNode *current, int level = 0) {
+        if (current == nullptr) return nullptr;
+        AbstractSyntaxTreeNode *temp = current;
+        AbstractSyntaxTreeNode *result = nullptr;
+        while (temp != nullptr && temp->atom.type != AtomType::NIL) {
+            if (isAtomButNotParen(temp->atom)) {
+                throw Errors(ErrorType::COND_FORMAT_ERROR, "ERROR (COND format) : ", "", parser.root);
+            }
+            temp = temp->right;
+        }
+
+        temp = current;
+
+        while (temp != nullptr && temp->atom.type != AtomType::NIL) {
+            result = exec(temp->left, level);
+            temp = temp->right;
+        }
+        return result;
+    }
+    /*
+        if, cond
+    */
+    AbstractSyntaxTreeNode *execConditionals(AbstractSyntaxTreeNode *current, int level = 0) {
+        if (current == nullptr) return nullptr;
+        AbstractSyntaxTreeNode *firstArgument = current->left;
+        if (firstArgument->atom.symbol != "if" && firstArgument->atom.symbol != "cond") return nullptr;
+        if (firstArgument->atom.symbol == "if") {
+            int sizeOfArguments = size(current->right);
+            if (sizeOfArguments < 2 || sizeOfArguments > 3)
+                throw Errors(ErrorType::NUMBER_OF_ARGUMENT_ERROR,
+                             "ERROR (incorrect number of arguments) : " + firstArgument->atom.symbol);
+            AbstractSyntaxTreeNode *secondArgument = current->right->left;
+
+            AbstractSyntaxTreeNode *conditionResult = exec(secondArgument, level + 1);
+            if (conditionResult->atom.type == AtomType::NIL) {
+                debugger.printd("if got an nil");
+                if (sizeOfArguments == 3) { // have 'else'
+                    AbstractSyntaxTreeNode *thirdArgument = current->right->right->right->left;
+                    return exec(thirdArgument, level + 1);
+                }
+                throw Errors(ErrorType::NO_RETURN_VALUE_ERROR, "ERROR (no return value) : ", "", current);
+            } else {
+                debugger.printd("if got a condition");
+                AbstractSyntaxTreeNode *thirdArgument = copyNode(current->right->right->left);
+                // parser.printAll(thirdArgument);
+                return exec(thirdArgument, level + 1);
+            }
+        } else if (firstArgument->atom.symbol == "cond") {
+            // syntax: (cond (condition1 result1) (condition2 result2) ... (else result))
+            // OR (cond condition1 result1)
+            // Note: need to check if the else is a keyword or a symbol
+            // only when all conditions are false, the else will exec
+            debugger.printd("cond");
+            int sizeOfArguments = size(current->right);
+            debugger.printd("Argument size: " + to_string(sizeOfArguments));
+            if (sizeOfArguments < 1)
+                throw Errors(ErrorType::COND_FORMAT_ERROR, "ERROR (COND format) : ", "", current);
+            AbstractSyntaxTreeNode *temp = current->right;
+            // check errors
+            while (temp != nullptr && temp->atom.type != AtomType::NIL) {
+                if (size(temp->left) < 2)
+                    throw Errors(ErrorType::COND_FORMAT_ERROR, "ERROR (COND format) : ", "", current);
+                if (isAtomButNotParen(temp->left->atom)) {
+                    throw Errors(ErrorType::COND_FORMAT_ERROR, "ERROR (COND format) : ", "", current);
+                }
+                temp = temp->right;
+            }
+            temp = current->right;
+
+            while (temp != nullptr && temp->atom.type != AtomType::NIL) {
+                if (size(temp->left) < 2)
+                    throw Errors(ErrorType::COND_FORMAT_ERROR, "ERROR (COND format) : ", "", current);
+                if (isAtomButNotParen(temp->left->atom)) {
+                    throw Errors(ErrorType::COND_FORMAT_ERROR, "ERROR (COND format) : ", "", current);
+                }
+                AbstractSyntaxTreeNode *condition = temp->left->left;
+                AbstractSyntaxTreeNode *result = temp->left->right;
+                if (isAtomButNotParen(result->atom)) {
+                    throw Errors(ErrorType::COND_FORMAT_ERROR, "ERROR (COND format) : ", "", current);
+                }
+                if (condition->atom.type == AtomType::SYMBOL && condition->atom.symbol == "else" &&
+                    temp->right != nullptr && temp->right->atom.type == AtomType::NIL) {
+                    debugger.printd("got else");
+                    return execSequence(result, level + 1);
+                }
+                AbstractSyntaxTreeNode *conditionResult = exec(condition, level + 1);
+                if (conditionResult->atom.type != AtomType::NIL) {
+                    debugger.printd("got a condition");
+                    return execSequence(result, level + 1);
+                }
+                temp = temp->right;
+            }
+            throw Errors(ErrorType::NO_RETURN_VALUE_ERROR, "ERROR (no return value) : ", "", current);
+        }
+        return nullptr;
+    }
+
+    /*
+        begin
+    */
+    AbstractSyntaxTreeNode *execSequencingAndFunctional(AbstractSyntaxTreeNode *current, int level = 0) {
+        if (current == nullptr) return nullptr;
+        AbstractSyntaxTreeNode *firstArgument = current->left;
+        if (firstArgument->atom.symbol != "begin") return nullptr;
+        int sizeOfArguments = size(current->right);
+        if (sizeOfArguments < 1)
+            throw Errors(ErrorType::NUMBER_OF_ARGUMENT_ERROR,
+                         "ERROR (incorrect number of arguments) : " + firstArgument->atom.symbol);
+        return execSequence(current->right, level + 1); // Error is not handled here!!!!
+    }
+
+    /*
+        quote, no exec
+    */
+    AbstractSyntaxTreeNode *execQuote(AbstractSyntaxTreeNode *current, int level = 0) {
+        if (current == nullptr) return nullptr;
+        AbstractSyntaxTreeNode *firstArgument = current->left;
+        if (firstArgument->atom.symbol != "quote") return nullptr;
+        if (size(current->right) != 1)
+            throw Errors(ErrorType::NUMBER_OF_ARGUMENT_ERROR,
+                         "ERROR (incorrect number of arguments) : quote");
+        return copyNode(current->right->left);
+    }
+    AbstractSyntaxTreeNode *exec(AbstractSyntaxTreeNode *current, int level = 0) {
+        // cerr << "type: " << current->atom.type << " symbol: " << current->atom.symbol << endl;
+        if (isAtomButNotParen(current->atom)) {
+            if (current->atom.type != AtomType::SYMBOL) {
+                return current;
+            }
+
+            if (globalSymbolTable.find(current->atom.symbol) == globalSymbolTable.end()) {
+                throw Errors(ErrorType::UNBOUND_ERROR, "ERROR (unbound symbol) : " + current->atom.symbol);
+            }
+
+            return globalSymbolTable[current->atom.symbol]; // TODO: return the value of the symbol
+        }
+
+        if (current->left == nullptr) return current; // atom
+
+        if (!isList(current)) {
+            throw Errors(ErrorType::NON_LIST_ERROR, "ERROR (non-list) : ", "", current);
+        }
+
+        AbstractSyntaxTreeNode *firstArgument = current->left;
+        // cerr << "firstArgument: " << firstArgument->atom.symbol << endl;
+        if (isAtomButNotParen(firstArgument->atom)) {
+            if (firstArgument->atom.type != AtomType::SYMBOL) { // is atom but not symbols
+                debugger.printd("It's an atom but not a symbol");
+                throw Errors(ErrorType::APPLY_NON_FUNCTION_ERROR,
+                             "ERROR (attempt to apply non-function) : ", "", firstArgument);
+            }
+            // TODO: check if it is a function name
+
+            AbstractSyntaxTreeNode *result = execTopLevelFunctions(current, level);
+            if (result != nullptr) return result;
+            result = execConstructors(current, level);
+            if (result != nullptr) return result;
+            result = execPartAccessors(current, level);
+            if (result != nullptr) return result;
+            result = execPrimitivePredicates(current, level);
+            if (result != nullptr) return result;
+            result = execBasicArithmetic(current, level);
+            if (result != nullptr) return result;
+            result = execLogical(current, level);
+            if (result != nullptr) return result;
+            result = execComparator(current, level);
+            if (result != nullptr) return result;
+            result = execStringOperation(current, level);
+            if (result != nullptr) return result;
+            result = execEqivalenceTester(current, level);
+            if (result != nullptr) return result;
+            result = execConditionals(current, level);
+            if (result != nullptr) return result;
+            result = execSequencingAndFunctional(current, level);
+            if (result != nullptr) return result;
+            result = execQuote(current, level);
+            if (result != nullptr) return result;
+
+            // Is it a known symbol?
+            if (globalSymbolTable.find(firstArgument->atom.symbol) == globalSymbolTable.end()) {
+                throw Errors(ErrorType::UNBOUND_ERROR,
+                             "ERROR (unbound symbol) : " + firstArgument->atom.symbol);
+            }
+
+            // Is it a known function?
+            if (globalSymbolTable[firstArgument->atom.symbol]->isFunction) {
+                AbstractSyntaxTreeNode *result = makeAtom(".");
+                result->left = globalSymbolTable[firstArgument->atom.symbol];
+                result->right = current->right;
+                return exec(result, level + 1);
+            } else {
+                debugger.printd("Is it a known function?");
+                throw Errors(ErrorType::APPLY_NON_FUNCTION_ERROR,
+                             "ERROR (attempt to apply non-function) : ", "",
+                             globalSymbolTable[firstArgument->atom.symbol]);
+            }
+
+        } else if (firstArgument->atom.type == UNKNOWN || firstArgument->atom.type == DOT) {
+            // TODO: it is ((. . .) . . .), should evaluate the first . . . and then apply the rest
+            if (firstArgument->left != nullptr && firstArgument->left->atom.type == AtomType::QUOTE) {
+                return exec(firstArgument, level + 1);
+            }
+            AbstractSyntaxTreeNode *result = exec(firstArgument, level + 1);
+            if (globalSymbolTable.find(result->atom.symbol) == globalSymbolTable.end() ||
+                !globalSymbolTable[result->atom.symbol]->isFunction) {
+                debugger.printd("I consider this symbol is not a function");
+                throw Errors(ErrorType::APPLY_NON_FUNCTION_ERROR,
+                             "ERROR (attempt to apply non-function) : ", "", result);
+            }
+            // current->left = result;
+            AbstractSyntaxTreeNode *nextTree = copyNode(current);
+            nextTree->left = result;
+            debugger.printd("restarting to exec");
+            return exec(nextTree, level + 1);
+            /// return exec(result, level + 1);
+        } else if (firstArgument->atom.type == QUOTE) {
+            if (size(current->right) != 1)
+                throw Errors(ErrorType::NUMBER_OF_ARGUMENT_ERROR,
+                             "ERROR (incorrect number of arguments) : quote");
+
+            return copyNode(current->right->left);
+        }
+
+        else {
+            debugger.printd("What is this?");
+            throw Errors(ErrorType::APPLY_NON_FUNCTION_ERROR, "ERROR (attempt to apply non-function) : ", "",
+                         firstArgument);
+        }
+        return nullptr;
+    }
+} executor;
+
 signed main() {
     // CHIWAWA;
     // GETOUT;
@@ -813,18 +1853,23 @@ signed main() {
 
         try {
             // cerr << "Start Skip White Spaces\n";
+            executor.init();
             Atom startToken = scanner.getToken();
             // cerr << "Start Check SExp\n";
             parser.isSExpCorrect(startToken);
             parser.buildAbstractSyntaxTree();
+            // parser.printAll();
             if (parser.isExit()) {
                 cendl;
                 break;
             }
-            parser.printAbstractSyntaxTree();
+            // cerr << "Start Evaluate\n";
+            AbstractSyntaxTreeNode *result = executor.exec(parser.root);
+            parser.printAbstractSyntaxTree(result);
             /// cerr << "===";
-            // parser.printAll();
+            // parser.printAll(result);
             // cendl;
+
             scanner.reset();
             parser.clearAbstractSyntaxTree();
 
@@ -833,9 +1878,18 @@ signed main() {
                 cout << e.what() << endl;
                 break;
             } else
-                cout << e.what() << endl;
+                cout << e.what();
 
-            if (e.type != ErrorType::NO_CLOSING_QUOTE_ERROR) try {
+            if (e.type == ErrorType::DEFINE_FORMAT_ERROR || e.type == ErrorType::ARGUMENT_TYPE_ERROR ||
+                e.type == ErrorType::COND_FORMAT_ERROR || e.type == ErrorType::NON_LIST_ERROR ||
+                e.type == ErrorType::NO_RETURN_VALUE_ERROR || e.type == ErrorType::APPLY_NON_FUNCTION_ERROR) {
+                parser.printAbstractSyntaxTree(e.node);
+            }
+
+            else
+                cendl;
+
+            if (e.type == ErrorType::UNEXPECTED_TOKEN_ERROR) try {
                     scanner.skipToNextLine(e.unexpectedToken.back());
                 } catch (Errors e) {
                     cout << "\n> " << e.what() << endl;
@@ -843,12 +1897,19 @@ signed main() {
                 }
 
             scanner.errorreset();
+            parser.clearAbstractSyntaxTree();
+            try {
+                scanner.skipWhiteSpaces();
+                scanner.skipLineComment(false);
+            } catch (Errors e) {
+                cout << e.what() << endl;
+                break;
+            }
         }
 
-        // scanner.SkipWhiteSpacesExceptReturn(false);
-        // scanner.skipLineComment(false);
-
     } while (1);
+
+    executor.clear();
 
     cout << "Thanks for using OurScheme!" << endl;
     // cerr << "Time: " << (double)clock() / (double)CLOCKS_PER_SEC << '\n';
