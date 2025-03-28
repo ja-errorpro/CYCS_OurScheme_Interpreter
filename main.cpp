@@ -74,7 +74,8 @@ enum AtomType {
     QUOTE = 0xCaFe,
     LEFT_PAREN = 0xb33f,
     RIGHT_PAREN = 0x5069,
-    INT = 0x4a8763
+    INT = 0x4a8763,
+    ERROR = 0xa2c991
 };
 
 class Atom {
@@ -120,7 +121,9 @@ enum ErrorType {
     UNBOUND_CONDITION_ERROR,
     LEVEL_ERROR,
     LAMBDA_FORMAT_ERROR,
-    LET_FORMAT_ERROR
+    LET_FORMAT_ERROR,
+    CUSTOM_ERROR,
+    SET_FORMAT_ERROR
 };
 struct AbstractSyntaxTreeNode {
     Atom atom;
@@ -291,6 +294,7 @@ class LexicalAnalyzer {
             c = getNextChar();
         } catch (Errors e) {
             if (e.type == ErrorType::EOF_ERROR) {
+                eof = true;
                 throw Errors(ErrorType::NO_CLOSING_QUOTE_ERROR,
                              "ERROR (no closing quote) : END-OF-FILE encountered at Line " +
                                  to_string(old_line) + " Column " + to_string(old_column),
@@ -353,6 +357,7 @@ class LexicalAnalyzer {
                 c = getNextChar();
             } catch (Errors e) {
                 if (e.type == ErrorType::EOF_ERROR) {
+                    eof = true;
                     throw Errors(ErrorType::NO_CLOSING_QUOTE_ERROR,
                                  "ERROR (no closing quote) : END-OF-LINE encountered at Line " +
                                      to_string(old_line) + " Column " + to_string(columnNumber + 1),
@@ -768,7 +773,8 @@ class SyntaxAnalyzer {
         }
     }
 
-    void printAbstractSyntaxTree(AbstractSyntaxTreeNode *current = nullptr, int alignSpaces = 0) {
+    void printAbstractSyntaxTree(AbstractSyntaxTreeNode *current = nullptr, int alignSpaces = 0,
+                                 bool addEndline = 1) {
         // like pretty print in python
         if (current == nullptr) current = root;
         if (current == nullptr) return;
@@ -820,20 +826,20 @@ class SyntaxAnalyzer {
                 printAtom(current->atom);
             }
         }
-        cendl;
+        if (addEndline) cendl;
     }
 
-    bool isSExpCorrect(Atom startAtom) {
+    bool isSExpCorrect(Atom startAtom, LexicalAnalyzer &scannerExp = scanner) {
         if (isAtomButNotParen(startAtom)) return true; // Note: () is a valid atom
         if (startAtom.type == AtomType::LEFT_PAREN) {
-            string nextToken = scanner.peekToken();
-            int nextAtomType = scanner.StringToAtom(nextToken).type;
+            string nextToken = scannerExp.peekToken();
+            int nextAtomType = scannerExp.StringToAtom(nextToken).type;
             if (nextAtomType == AtomType::RIGHT_PAREN) {
-                scanner.getToken();
+                scannerExp.getToken();
                 return true;
             }
 
-            Atom nextAtom = scanner.getToken(); // Is this another S-exp or DOT or RIGHT_PAREN?
+            Atom nextAtom = scannerExp.getToken(); // Is this another S-exp or DOT or RIGHT_PAREN?
             if (nextAtomType == AtomType::DOT) {
                 throw Errors(ErrorType::UNEXPECTED_TOKEN_ERROR,
                              "ERROR (unexpected token) : atom or '(' expected when token at Line " +
@@ -843,13 +849,13 @@ class SyntaxAnalyzer {
             }
 
             while (nextAtom.type != AtomType::RIGHT_PAREN && nextAtom.type != AtomType::DOT) {
-                isSExpCorrect(nextAtom);
-                nextAtom = scanner.getToken();
+                isSExpCorrect(nextAtom, scannerExp);
+                nextAtom = scannerExp.getToken();
             }
             if (nextAtom.type == AtomType::DOT) {
-                nextAtom = scanner.getToken();
-                isSExpCorrect(nextAtom);
-                nextAtom = scanner.getToken();
+                nextAtom = scannerExp.getToken();
+                isSExpCorrect(nextAtom, scannerExp);
+                nextAtom = scannerExp.getToken();
                 if (nextAtom.type != AtomType::RIGHT_PAREN) {
                     throw Errors(ErrorType::UNEXPECTED_TOKEN_ERROR,
                                  "ERROR (unexpected token) : ')' expected when token at Line " +
@@ -869,8 +875,8 @@ class SyntaxAnalyzer {
             }
         }
         if (startAtom.type == AtomType::QUOTE) {
-            Atom nextAtom = scanner.getToken();
-            isSExpCorrect(nextAtom);
+            Atom nextAtom = scannerExp.getToken();
+            isSExpCorrect(nextAtom, scannerExp);
             return true;
         }
         throw Errors(ErrorType::UNEXPECTED_TOKEN_ERROR,
@@ -940,7 +946,17 @@ class Executor {
                                                  {"let", true},
                                                  {"lambda", true},
                                                  {"verbose?", true},
-                                                 {"verbose", true}
+                                                 {"verbose", true},
+                                                 {"read", true},
+                                                 {"write", true},
+                                                 {"display-string", true},
+                                                 {"newline", true},
+                                                 {"symbol->string", true},
+                                                 {"number->string", true},
+                                                 {"create-error-object", true},
+                                                 {"error-object?", true},
+                                                 {"set!", true},
+                                                 {"eval", true}
 
     }; // user is not allowed to define these words
     // bool: is it a function name?
@@ -1099,8 +1115,9 @@ class Executor {
                                                                  : secondArgument->right->atom.symbol);
                 result->right = thirdArgument;
                 globalSymbolTable[function_name] = result;
-                debugger.printd("defined a function");
-                return makeAtom(verbose ? (function_name + " defined") : "");
+                debugger.printd("defined a function ", function_name);
+                cout << (verbose ? (function_name + " defined\n") : "");
+                return makeAtom(function_name + " defined");
             }
 
             if (size(current->right) > 2)
@@ -1141,7 +1158,8 @@ class Executor {
 
             globalSymbolTable[secondArgument->atom.symbol] = result;
             debugger.printd("defined a symbol");
-            return makeAtom(verbose ? (secondArgument->atom.symbol + " defined") : "");
+            cout << (verbose ? (secondArgument->atom.symbol + " defined\n") : "");
+            return makeAtom(secondArgument->atom.symbol + " defined");
         }
         return nullptr;
     }
@@ -1207,6 +1225,9 @@ class Executor {
         return nullptr;
     }
 
+    /*
+        car, cdr
+    */
     AbstractSyntaxTreeNode *execPartAccessors(
         AbstractSyntaxTreeNode *current, int level,
         unordered_map<string, AbstractSyntaxTreeNode *> &localSymbolTable) {
@@ -2105,7 +2126,7 @@ class Executor {
                     }
                     throw e;
                 }
-                if (conditionResult->atom.type != AtomType::NIL) {
+                if (conditionResult != nullptr && conditionResult->atom.type != AtomType::NIL) {
                     debugger.printd("got a condition");
                     return execSequence(result, level, localSymbolTable);
                 }
@@ -2196,7 +2217,7 @@ class Executor {
             AbstractSyntaxTreeNode *sequence = firstArgument->right;
             while (sequence != nullptr && sequence->atom.type != AtomType::NIL) {
                 try {
-                    result = exec(sequence->left, level + 1, newLocalSymbolTable);
+                    result = exec(sequence->left, level, newLocalSymbolTable);
                 } catch (Errors e) {
                     if (e.type != ErrorType::NO_RETURN_VALUE_ERROR) {
                         throw e;
@@ -2273,7 +2294,7 @@ class Executor {
         AbstractSyntaxTreeNode *sequence = function->right;
         while (sequence != nullptr && sequence->atom.type != AtomType::NIL) {
             try {
-                result = exec(sequence->left, level + 1, newLocalSymbolTable);
+                result = exec(sequence->left, level, newLocalSymbolTable);
             } catch (Errors e) {
                 if (e.type != ErrorType::NO_RETURN_VALUE_ERROR) {
                     throw e;
@@ -2321,7 +2342,7 @@ class Executor {
             AbstractSyntaxTreeNode *symbol = pair_sequence->left->left;
             AbstractSyntaxTreeNode *result;
             try {
-                result = exec(pair_sequence->left->right->left, level + 1, localSymbolTable);
+                result = exec(pair_sequence->left->right->left, 0, localSymbolTable);
             } catch (Errors e) {
                 if (e.type == ErrorType::NO_RETURN_VALUE_ERROR) {
                     throw Errors(ErrorType::NO_RETURN_VALUE_ERROR_IN_FUNCTION,
@@ -2351,6 +2372,199 @@ class Executor {
         }
         if (result == nullptr)
             throw Errors(ErrorType::NO_RETURN_VALUE_ERROR, "ERROR (no return value) : ", "", current);
+        return result;
+    }
+
+    /*
+        read, write, newline, symbol->string, number->string, display-string
+    */
+    AbstractSyntaxTreeNode *execIO(AbstractSyntaxTreeNode *current, int level,
+                                   unordered_map<string, AbstractSyntaxTreeNode *> &localSymbolTable) {
+        if (current == nullptr) return nullptr;
+        AbstractSyntaxTreeNode *firstArgument = current->left;
+        if (firstArgument->atom.symbol != "read" && firstArgument->atom.symbol != "write" &&
+            firstArgument->atom.symbol != "newline" && firstArgument->atom.symbol != "symbol->string" &&
+            firstArgument->atom.symbol != "number->string" && firstArgument->atom.symbol != "display-string")
+            return nullptr;
+
+        if (firstArgument->atom.symbol == "read") {
+            if (size(current->right) != 0)
+                throw Errors(ErrorType::NUMBER_OF_ARGUMENT_ERROR,
+                             "ERROR (incorrect number of arguments) : read");
+            AbstractSyntaxTreeNode *result;
+            SyntaxAnalyzer parser;
+            LexicalAnalyzer scanner;
+            vector<Atom> tokenList;
+            try {
+                scanner.lineNumber = 1;
+                Atom startToken = scanner.getToken();
+                parser.isSExpCorrect(startToken, scanner);
+                tokenList = scanner.tokenList;
+                parser.buildAbstractSyntaxTree(tokenList);
+                result = parser.root;
+            } catch (Errors e) {
+                AbstractSyntaxTreeNode *errorNode =
+                    new AbstractSyntaxTreeNode(Atom(AtomType::STRING, "\"" + e.message + "\"", -MOD, -MOD));
+                garbageCollector.insert(errorNode);
+                return errorNode;
+            }
+
+            return result;
+        } else if (firstArgument->atom.symbol == "write") {
+            if (size(current->right) != 1)
+                throw Errors(ErrorType::NUMBER_OF_ARGUMENT_ERROR,
+                             "ERROR (incorrect number of arguments) : write");
+            AbstractSyntaxTreeNode *result = exec(current->right->left, level + 1, localSymbolTable);
+            parser.printAbstractSyntaxTree(result, 0, false);
+            return result;
+        } else if (firstArgument->atom.symbol == "newline") {
+            if (size(current->right) != 0)
+                throw Errors(ErrorType::NUMBER_OF_ARGUMENT_ERROR,
+                             "ERROR (incorrect number of arguments) : newline");
+            cendl;
+            return makeAtom("nil");
+        } else if (firstArgument->atom.symbol == "symbol->string") {
+            if (size(current->right) != 1)
+                throw Errors(ErrorType::NUMBER_OF_ARGUMENT_ERROR,
+                             "ERROR (incorrect number of arguments) : symbol->string");
+            AbstractSyntaxTreeNode *result = exec(current->right->left, level + 1, localSymbolTable);
+            if (result->atom.type != AtomType::SYMBOL)
+                throw Errors(ErrorType::ARGUMENT_TYPE_ERROR,
+                             "ERROR (symbol->string with incorrect argument type) : ", "", result);
+            string resultString = "\"" + result->atom.symbol + "\"";
+            AbstractSyntaxTreeNode *resultNode =
+                new AbstractSyntaxTreeNode(Atom(AtomType::STRING, resultString, -MOD, -MOD));
+            garbageCollector.insert(resultNode);
+            return resultNode;
+        } else if (firstArgument->atom.symbol == "number->string") {
+            if (size(current->right) != 1)
+                throw Errors(ErrorType::NUMBER_OF_ARGUMENT_ERROR,
+                             "ERROR (incorrect number of arguments) : number->string");
+            AbstractSyntaxTreeNode *result = exec(current->right->left, level + 1, localSymbolTable);
+            if (result->atom.type != AtomType::INT && result->atom.type != AtomType::FLOAT)
+                throw Errors(ErrorType::ARGUMENT_TYPE_ERROR,
+                             "ERROR (number->string with incorrect argument type) : ", "", result);
+            string resultString = "\"" + result->atom.symbol + "\"";
+            AbstractSyntaxTreeNode *resultNode =
+                new AbstractSyntaxTreeNode(Atom(AtomType::STRING, resultString, -MOD, -MOD));
+            garbageCollector.insert(resultNode);
+            return resultNode;
+        } else if (firstArgument->atom.symbol == "display-string") {
+            if (size(current->right) != 1)
+                throw Errors(ErrorType::NUMBER_OF_ARGUMENT_ERROR,
+                             "ERROR (incorrect number of arguments) : display-string");
+            AbstractSyntaxTreeNode *result = exec(current->right->left, level + 1, localSymbolTable);
+            if (result->atom.type != AtomType::STRING)
+                throw Errors(ErrorType::ARGUMENT_TYPE_ERROR,
+                             "ERROR (display-string with incorrect argument type) : ", "", result);
+            cout << result->atom.symbol.substr(1, result->atom.symbol.size() - 2);
+            return result;
+        }
+
+        return nullptr;
+    }
+
+    /*
+        create-error-object, error-object?
+    */
+    AbstractSyntaxTreeNode *execError(AbstractSyntaxTreeNode *current, int level,
+                                      unordered_map<string, AbstractSyntaxTreeNode *> &localSymbolTable) {
+        if (current == nullptr) return nullptr;
+        AbstractSyntaxTreeNode *firstArgument = current->left;
+        if (firstArgument->atom.symbol != "create-error-object" &&
+            firstArgument->atom.symbol != "error-object?")
+            return nullptr;
+        if (firstArgument->atom.symbol == "create-error-object") {
+            if (size(current->right) != 1)
+                throw Errors(ErrorType::NUMBER_OF_ARGUMENT_ERROR,
+                             "ERROR (incorrect number of arguments) : create-error-object");
+            AbstractSyntaxTreeNode *result;
+            try {
+                result = exec(current->right->left, level + 1, localSymbolTable);
+            } catch (Errors e) {
+                if (e.type == ErrorType::NO_RETURN_VALUE_ERROR) {
+                    throw Errors(ErrorType::UNBOUND_PARAMETER_ERROR, "ERROR (unbound parameter) : ", "",
+                                 e.node);
+                }
+                throw e;
+            }
+            if (result->atom.type != AtomType::STRING)
+                throw Errors(ErrorType::ARGUMENT_TYPE_ERROR,
+                             "ERROR (create-error-object with incorrect argument type) : ", "", result);
+            AbstractSyntaxTreeNode *errorNode =
+                new AbstractSyntaxTreeNode(Atom(AtomType::ERROR, result->atom.symbol, -MOD, -MOD));
+            garbageCollector.insert(errorNode);
+            return errorNode;
+        } else if (firstArgument->atom.symbol == "error-object?") {
+            if (size(current->right) != 1)
+                throw Errors(ErrorType::NUMBER_OF_ARGUMENT_ERROR,
+                             "ERROR (incorrect number of arguments) : error-object?");
+            AbstractSyntaxTreeNode *result;
+            try {
+                result = exec(current->right->left, level + 1, localSymbolTable);
+            } catch (Errors e) {
+                if (e.type == ErrorType::NO_RETURN_VALUE_ERROR) {
+                    throw Errors(ErrorType::UNBOUND_PARAMETER_ERROR, "ERROR (unbound parameter) : ", "",
+                                 e.node);
+                }
+                throw e;
+            }
+            if (result->atom.type != AtomType::ERROR) return makeAtom("nil");
+            return makeAtom("#t");
+        }
+        return nullptr;
+    }
+
+    AbstractSyntaxTreeNode *execEval(AbstractSyntaxTreeNode *current, int level,
+                                     unordered_map<string, AbstractSyntaxTreeNode *> &localSymbolTable) {
+        if (current == nullptr) return nullptr;
+        AbstractSyntaxTreeNode *firstArgument = current->left;
+        if (firstArgument->atom.symbol != "eval") return nullptr;
+        if (size(current->right) != 1)
+            throw Errors(ErrorType::NUMBER_OF_ARGUMENT_ERROR, "ERROR (incorrect number of arguments) : eval");
+        AbstractSyntaxTreeNode *result = exec(current->right->left, level + 1, localSymbolTable);
+        return exec(result, 0, localSymbolTable);
+    }
+
+    AbstractSyntaxTreeNode *execSet(AbstractSyntaxTreeNode *current, int level,
+                                    unordered_map<string, AbstractSyntaxTreeNode *> &localSymbolTable) {
+        if (current == nullptr) return nullptr;
+        AbstractSyntaxTreeNode *firstArgument = current->left;
+        if (firstArgument->atom.symbol != "set!") return nullptr;
+        if (size(current->right) != 2)
+            throw Errors(ErrorType::NUMBER_OF_ARGUMENT_ERROR, "ERROR (incorrect number of arguments) : set!");
+        AbstractSyntaxTreeNode *secondArgument = current->right->left;
+        AbstractSyntaxTreeNode *thirdArgument = current->right->right->left;
+        if (secondArgument->atom.type != AtomType::SYMBOL ||
+            reservedWords.find(secondArgument->atom.symbol) != reservedWords.end())
+            throw Errors(ErrorType::SET_FORMAT_ERROR, "ERROR (SET! format) : ", "", current);
+
+        AbstractSyntaxTreeNode *result;
+
+        if (isAtomButNotParen(thirdArgument->atom) && thirdArgument->atom.type != AtomType::SYMBOL) {
+            result = evaluateTree(copyNode(thirdArgument), localSymbolTable);
+        } else if (thirdArgument->atom.type == AtomType::DOT &&
+                   thirdArgument->left->atom.symbol == "lambda") {
+            result = exec(thirdArgument, level + 1, localSymbolTable);
+            result->atom.isFunction = true;
+            debugger.printd("lambda defined");
+        } else {
+            try {
+                result = exec(thirdArgument, level + 1, localSymbolTable);
+            } catch (Errors e) {
+                if (e.type == ErrorType::NO_RETURN_VALUE_ERROR) {
+                    throw Errors(ErrorType::NO_RETURN_VALUE_ERROR_IN_FUNCTION,
+                                 "ERROR (no return value) : ", "", e.node);
+                }
+                throw e;
+            }
+        }
+
+        if (localSymbolTable.find(secondArgument->atom.symbol) != localSymbolTable.end()) {
+            localSymbolTable[secondArgument->atom.symbol] = result;
+        } else {
+            globalSymbolTable[secondArgument->atom.symbol] = result;
+        }
         return result;
     }
 
@@ -2389,34 +2603,59 @@ class Executor {
             }
             // TODO: check if it is a function name
 
-            AbstractSyntaxTreeNode *result = execTopLevelFunctions(current, level, localSymbolTable);
-            if (result != nullptr) return result;
-            result = execConstructors(current, level, localSymbolTable);
-            if (result != nullptr) return result;
-            result = execPartAccessors(current, level, localSymbolTable);
-            if (result != nullptr) return result;
-            result = execPrimitivePredicates(current, level, localSymbolTable);
-            if (result != nullptr) return result;
-            result = execBasicArithmetic(current, level, localSymbolTable);
-            if (result != nullptr) return result;
-            result = execLogical(current, level, localSymbolTable);
-            if (result != nullptr) return result;
-            result = execComparator(current, level, localSymbolTable);
-            if (result != nullptr) return result;
-            result = execStringOperation(current, level, localSymbolTable);
-            if (result != nullptr) return result;
-            result = execEqivalenceTester(current, level, localSymbolTable);
-            if (result != nullptr) return result;
-            result = execConditionals(current, level, localSymbolTable);
-            if (result != nullptr) return result;
-            result = execSequencingAndFunctional(current, level, localSymbolTable);
-            if (result != nullptr) return result;
-            result = execQuote(current, level, localSymbolTable);
-            if (result != nullptr) return result;
-            result = execLambda(current, level, localSymbolTable);
-            if (result != nullptr) return result;
-            result = execLet(current, level, localSymbolTable);
-            if (result != nullptr) return result;
+            if (firstArgument->atom.symbol == "exit" || firstArgument->atom.symbol == "clean-environment" ||
+                firstArgument->atom.symbol == "define")
+                return execTopLevelFunctions(current, level, localSymbolTable);
+            if (firstArgument->atom.symbol == "cons" || firstArgument->atom.symbol == "list")
+                return execConstructors(current, level, localSymbolTable);
+            if (firstArgument->atom.symbol == "car" || firstArgument->atom.symbol == "cdr")
+                return execPartAccessors(current, level, localSymbolTable);
+            if (firstArgument->atom.symbol == "atom?" && firstArgument->atom.symbol == "pair?" &&
+                firstArgument->atom.symbol == "list?" && firstArgument->atom.symbol == "null?" &&
+                firstArgument->atom.symbol == "integer?" && firstArgument->atom.symbol == "real?" &&
+                firstArgument->atom.symbol == "number?" && firstArgument->atom.symbol == "string?" &&
+                firstArgument->atom.symbol == "boolean?" && firstArgument->atom.symbol == "symbol?")
+                return execPrimitivePredicates(current, level, localSymbolTable);
+
+            if (firstArgument->atom.symbol == "+" || firstArgument->atom.symbol == "-" ||
+                firstArgument->atom.symbol == "*" || firstArgument->atom.symbol == "/")
+                return execBasicArithmetic(current, level, localSymbolTable);
+            if (firstArgument->atom.symbol == "not" || firstArgument->atom.symbol == "and" ||
+                firstArgument->atom.symbol == "or")
+                return execLogical(current, level, localSymbolTable);
+            if (firstArgument->atom.symbol == ">" || firstArgument->atom.symbol == ">=" ||
+                firstArgument->atom.symbol == "<" || firstArgument->atom.symbol == "<=" ||
+                firstArgument->atom.symbol == "=")
+                return execComparator(current, level, localSymbolTable);
+            if (firstArgument->atom.symbol == "string-append" || firstArgument->atom.symbol == "string>?" ||
+                firstArgument->atom.symbol == "string<?" || firstArgument->atom.symbol == "string=?")
+                return execStringOperation(current, level, localSymbolTable);
+            if (firstArgument->atom.symbol == "eqv?" || firstArgument->atom.symbol == "equal?")
+                return execEqivalenceTester(current, level, localSymbolTable);
+            if (firstArgument->atom.symbol == "if" || firstArgument->atom.symbol == "cond")
+                return execConditionals(current, level, localSymbolTable);
+            if (firstArgument->atom.symbol == "begin")
+                return execSequencingAndFunctional(current, level, localSymbolTable);
+            if (firstArgument->atom.symbol == "quote" || firstArgument->atom.symbol == "'")
+                return execQuote(current, level, localSymbolTable);
+
+            if (firstArgument->atom.symbol == "lambda") return execLambda(current, level, localSymbolTable);
+
+            if (firstArgument->atom.symbol == "let") return execLet(current, level, localSymbolTable);
+
+            if (firstArgument->atom.symbol == "read" || firstArgument->atom.symbol == "write" ||
+                firstArgument->atom.symbol == "display-string" ||
+                firstArgument->atom.symbol == "symbol->string" ||
+                firstArgument->atom.symbol == "number->string" || firstArgument->atom.symbol == "newline")
+                return execIO(current, level, localSymbolTable);
+
+            if (firstArgument->atom.symbol == "create-error-object" ||
+                firstArgument->atom.symbol == "error-object?")
+                return execError(current, level, localSymbolTable);
+
+            if (firstArgument->atom.symbol == "eval") return execEval(current, level, localSymbolTable);
+
+            if (firstArgument->atom.symbol == "set!") return execSet(current, level, localSymbolTable);
 
             // Is it a known symbol?
             if (globalSymbolTable.find(firstArgument->atom.symbol) == globalSymbolTable.end() &&
