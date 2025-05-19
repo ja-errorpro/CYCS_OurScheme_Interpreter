@@ -2275,6 +2275,11 @@ class Executor {
                 AbstractSyntaxTreeNode *errorNode =
                     new AbstractSyntaxTreeNode(Atom(AtomType::STRING, "\"" + e.message + "\"", -MOD, -MOD));
                 garbageCollector.insert(errorNode);
+                if (e.type == ErrorType::UNEXPECTED_TOKEN_ERROR) try {
+                        scanner.skipToNextLine(e.unexpectedToken.back());
+                    } catch (Errors e) {
+                        cout << "\n> " << e.what() << endl;
+                    }
                 return errorNode;
             }
 
@@ -2472,6 +2477,7 @@ class Executor {
             if (verbose) return makeAtom("#t");
             return makeAtom("nil");
         }
+        return nullptr;
     }
 
     AbstractSyntaxTreeNode *exec(AbstractSyntaxTreeNode *current, int level,
